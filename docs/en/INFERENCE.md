@@ -193,6 +193,7 @@ class GenerationParams:
     
     repainting_start: float = 0.0
     repainting_end: float = -1
+    chunk_mask_mode: str = "auto"
     audio_cover_strength: float = 1.0
     
     # 5Hz Language Model Parameters
@@ -350,6 +351,16 @@ class FormatSampleResult:
 
 ### Generation Parameters
 
+> **💡 Turbo parameter handling.** The defaults in the tables below (`guidance_scale=7.0`, `shift=1.0`) target the **base/SFT** models. When you select a **turbo** model (`acestep-v15-turbo`, `acestep-v15-xl-turbo`), note that the two CFG/timestep parameters are handled differently:
+>
+> | Parameter | Turbo behavior |
+> |-----------|----------------|
+> | `inference_steps` | `8` is already the turbo default. |
+> | `guidance_scale` | **Auto-corrected** to `1.0` by the pipeline — turbo bakes guidance into distillation and does not use CFG, so any value you pass is overridden (see `acestep/core/generation/handler/generate_music.py`). No action needed. |
+> | `shift` | **Not** auto-corrected. The default `1.0` is applied as-is; set **`shift=3.0`** for turbo (as the `shift` row below recommends). |
+>
+> In other words, the only timestep/guidance parameter you need to set manually for turbo is `shift=3.0`.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `inference_steps` | `int` | `8` | Number of denoising steps. Turbo model: 1-20 (recommended 8). Base model: 1-200 (recommended 32-64). Higher = better quality but slower. |
@@ -378,13 +389,14 @@ class FormatSampleResult:
 | `audio_codes` | `str` | `""` | Pre-extracted 5Hz audio semantic codes as a string. Advanced use only. |
 | `repainting_start` | `float` | `0.0` | Repainting start time in seconds (for repaint/lego tasks). |
 | `repainting_end` | `float` | `-1` | Repainting end time in seconds. Use `-1` for end of audio. |
+| `chunk_mask_mode` | `str` | `"auto"` | Chunk-mask control mode. Use `"explicit"` to pass the 0/1 mask derived from `repainting_start`/`repainting_end`; `"auto"` uses automatic chunk control. |
 | `audio_cover_strength` | `float` | `1.0` | Strength of audio cover/codes influence (0.0-1.0). Set smaller (0.2) for style transfer tasks. |
 
 ### 5Hz Language Model Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `thinking` | `bool` | `True` | Enable 5Hz Language Model "Chain-of-Thought" reasoning for semantic/music metadata and codes. |
+| `thinking` | `bool` | `True` | Enable 5Hz Language Model "Chain-of-Thought" reasoning for semantic/music metadata and codes. **Automatically ignored for `cover`, `repaint`, and `extract` tasks** (see note below). |
 | `lm_temperature` | `float` | `0.85` | LM sampling temperature (0.0-2.0). Higher = more creative/diverse, lower = more conservative. |
 | `lm_cfg_scale` | `float` | `2.0` | LM classifier-free guidance scale. Higher = stronger adherence to prompt. |
 | `lm_top_k` | `int` | `0` | LM top-k sampling. `0` disables top-k filtering. Typical values: 40-100. |
@@ -422,7 +434,7 @@ These fields are automatically populated by the LM when CoT reasoning is enabled
 | `seeds` | `Optional[List[int]]` | `None` | List of seeds for batch generation. If provided, will be padded with random seeds if fewer than batch_size. Can also be single int. |
 | `lm_batch_chunk_size` | `int` | `8` | Maximum batch size per LM inference chunk (GPU memory constraint). |
 | `constrained_decoding_debug` | `bool` | `False` | Enable debug logging for constrained decoding. |
-| `audio_format` | `str` | `"flac"` | Output audio format. Options: `"mp3"`, `"wav"`, `"flac"`. Default is FLAC for fast saving. |
+| `audio_format` | `str` | `"flac"` | Output audio format. Options: `"flac"`, `"mp3"`, `"opus"`, `"aac"`, `"wav"`, `"wav32"`. Default is FLAC for fast saving. |
 
 ---
 
@@ -505,9 +517,13 @@ params = GenerationParams(
     src_audio="original.mp3",
     repainting_start=10.0,  # seconds
     repainting_end=20.0,    # seconds
+    chunk_mask_mode="explicit",
     caption="smooth transition with piano solo",
 )
 ```
+
+Use `chunk_mask_mode="explicit"` when the selected Repaint interval must be passed as
+the model chunk mask. Gradio Repaint selects this mode automatically.
 
 **Required**:
 - `src_audio`: Path to source audio file
@@ -883,8 +899,8 @@ params = GenerationParams(
     src_audio="original_pop_song.mp3",
     caption="orchestral symphonic arrangement",
     audio_cover_strength=0.7,
-    thinking=True,  # Enable LM for metadata
-    use_cot_metas=True,
+    thinking=True,  # Note: LM is automatically skipped for cover tasks
+    use_cot_metas=True,  # Also ignored for cover tasks
 )
 
 config = GenerationConfig(batch_size=1)
@@ -1000,13 +1016,13 @@ caption="fast slow music"  # Conflicting tempos
 - Enable `use_adg=True`
 - Set `guidance_scale=7.0-9.0`
 - Set `shift=3.0` for better timestep distribution
-- Use lossless audio format (`audio_format="wav"`)
+- Use lossless audio format (`audio_format="wav"` or `"wav32"` for 32-bit float)
 
 **For Speed**:
 - Use turbo model with `inference_steps=8`
 - Disable ADG (`use_adg=False`)
 - Use `infer_method="ode"` (default)
-- Use compressed format (`audio_format="mp3"`) or default FLAC
+- Use compressed format (`audio_format="mp3"`, `"opus"`, or `"aac"`) or default FLAC
 
 **For Consistency**:
 - Set `use_random_seed=False` in config
@@ -1038,6 +1054,10 @@ caption="fast slow music"  # Conflicting tempos
 - Need faster generation
 - Want full control over parameters
 
+**LM Automatically Skipped**:
+
+The LM is automatically skipped for `cover`, `repaint`, and `extract` task types, regardless of the `thinking` setting. These tasks work directly with source audio and do not benefit from LM planning. All LM-related parameters (`thinking`, `use_cot_metas`, `use_cot_caption`, `use_cot_language`) are ignored for these tasks. Only `text2music`, `lego`, and `complete` tasks use the LM when enabled.
+
 ### 5. Batch Processing
 
 ```python
@@ -1068,11 +1088,19 @@ else:
 
 ### 7. Memory Management
 
-For large batch sizes or long durations:
-- Monitor GPU memory usage
-- Reduce `batch_size` if OOM errors occur
-- Reduce `lm_batch_chunk_size` for LM operations
-- Consider using `offload_to_cpu=True` during initialization
+ACE-Step 1.5 includes automatic VRAM management that adapts to your GPU:
+
+- **Automatic tier detection**: The system detects available VRAM and selects optimal settings (see [GPU_COMPATIBILITY.md](GPU_COMPATIBILITY.md))
+- **VRAM guard**: Before each inference, the system estimates VRAM requirements and automatically reduces `batch_size` if needed
+- **Adaptive VAE decode**: Three-tier fallback — GPU tiled decode → GPU decode with CPU offload → full CPU decode
+- **Auto chunk sizing**: VAE decode chunk size adapts to free VRAM (64/128/256/512/1024/1536)
+- **Duration/batch clamping**: Values exceeding your tier's limits are automatically clamped with a warning
+
+For manual tuning:
+- Reduce `batch_size` if OOM errors persist
+- Reduce `lm_batch_chunk_size` for LM operations on low-VRAM GPUs
+- Enable `offload_to_cpu=True` during initialization for GPUs with <20GB VRAM
+- Enable `quantization="int8_weight_only"` for GPUs with <20GB VRAM
 
 ### 8. Accessing Time Costs
 
@@ -1094,7 +1122,7 @@ if result.success:
 ### Common Issues
 
 **Issue**: Out of memory errors
-- **Solution**: Reduce `batch_size`, `inference_steps`, or enable CPU offloading
+- **Solution**: The system should automatically handle most OOM scenarios via VRAM guard (batch reduction) and adaptive VAE decode (CPU fallback). If OOM still occurs: reduce `batch_size`, reduce `inference_steps`, enable CPU offloading (`offload_to_cpu=True`), or enable INT8 quantization. See [GPU_COMPATIBILITY.md](GPU_COMPATIBILITY.md) for recommended settings per VRAM tier.
 
 **Issue**: Poor quality results
 - **Solution**: Increase `inference_steps`, adjust `guidance_scale`, use base model
